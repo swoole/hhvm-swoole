@@ -1,19 +1,18 @@
 /*
- +----------------------------------------------------------------------+
- | HipHop for PHP                                                       |
- +----------------------------------------------------------------------+
- | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
- +----------------------------------------------------------------------+
- | This source file is subject to version 3.01 of the PHP license,      |
- | that is bundled with this package in the file LICENSE, and is        |
- | available through the world-wide-web at the following url:           |
- | http://www.php.net/license/3_01.txt                                  |
- | If you did not receive a copy of the PHP license and are unable to   |
- | obtain it through the world-wide-web, please send a note to          |
- | license@php.net so we can mail you a copy immediately.               |
- +----------------------------------------------------------------------+
- */
-
+  +----------------------------------------------------------------------+
+  | Swoole                                                               |
+  +----------------------------------------------------------------------+
+  | This source file is subject to version 2.0 of the Apache license,    |
+  | that is bundled with this package in the file LICENSE, and is        |
+  | available through the world-wide-web at the following url:           |
+  | http://www.apache.org/licenses/LICENSE-2.0.html                      |
+  | If you did not receive a copy of the Apache2.0 license and are unable|
+  | to obtain it through the world-wide-web, please send a note to       |
+  | license@swoole.com so we can mail you a copy immediately.            |
+  +----------------------------------------------------------------------+
+  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  +----------------------------------------------------------------------+
+*/
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/vm/native-data.h"
@@ -47,9 +46,9 @@ enum php_swoole_server_callback_type
     SW_SERVER_CB_onManagerStop,    //manager
     SW_SERVER_CB_onPipeMessage,    //worker(evnet & task)
     //--------------------------Swoole\Http\Server----------------------
-            SW_SERVER_CB_onRequest,        //http server
+    SW_SERVER_CB_onRequest,        //http server
     //--------------------------Swoole\WebSocket\Server-----------------
-            SW_SERVER_CB_onHandShake,      //worker(event)
+    SW_SERVER_CB_onHandShake,      //worker(event)
     SW_SERVER_CB_onOpen,           //worker(event)
     SW_SERVER_CB_onMessage,        //worker(event)
     //-------------------------------END--------------------------------
@@ -63,13 +62,92 @@ namespace HPHP
 {
     static swServer *swoole_server_object;
 
+    static Variant get_recv_data(swEventData *req, char *header, uint32_t header_length)
+    {
+        char *data_ptr = NULL;
+        int data_len;
+
+#ifdef SW_USE_RINGBUFFER
+        swPackage package;
+        if (req->info.type == SW_EVENT_PACKAGE)
+        {
+            memcpy(&package, req->data, sizeof (package));
+
+            data_ptr = package.data;
+            data_len = package.length;
+        }
+#else
+        if (req->info.type == SW_EVENT_PACKAGE_END)
+        {
+            swString *worker_buffer = swWorker_get_buffer(SwooleG.serv, req->info.from_id);
+            data_ptr = worker_buffer->str;
+            data_len = worker_buffer->length;
+        }
+#endif
+        else
+        {
+            data_ptr = req->data;
+            data_len = req->info.len;
+        }
+
+        Variant retval;
+        if (header_length >= data_len)
+        {
+            retval = Variant("");
+        }
+        else
+        {
+            retval = Variant(String(data_ptr + header_length, data_len - header_length, CopyString));
+        }
+
+        if (header_length > 0)
+        {
+            memcpy(header, data_ptr, header_length);
+        }
+
+#ifdef SW_USE_RINGBUFFER
+        if (req->info.type == SW_EVENT_PACKAGE)
+        {
+            swReactorThread *thread = swServer_get_thread(SwooleG.serv, req->info.from_id);
+            thread->buffer_input->free(thread->buffer_input, data_ptr);
+        }
+#endif
+        return retval;
+    }
+
     static int hhvm_swoole_onReceive(swServer *serv, swEventData *req)
     {
         auto this_ = (ObjectData *) serv->ptr2;
-        auto args = make_packed_array(String("hello"), String("world"));
+        auto args = Array();
+        args.append(Variant(this_));
+        args.append(Variant(req->info.fd));
+        args.append(Variant(req->info.from_id));
+        args.append(get_recv_data(req, nullptr, 0));
         const Variant callback = this_->o_get("receive");
-        Variant retval = vm_call_user_func(callback, args);
+        vm_call_user_func(callback, args);
         return 0;
+    }
+
+    static void hhvm_swoole_onConnect(swServer *serv, swDataHead *info)
+    {
+        auto this_ = (ObjectData *) serv->ptr2;
+        auto args = Array();
+        args.append(Variant(this_));
+        args.append(Variant(info->fd));
+        args.append(Variant(info->from_id));
+        const Variant callback = this_->o_get("connect");
+        vm_call_user_func(callback, args);
+    }
+
+    static void hhvm_swoole_onClose(swServer *serv, swDataHead *info)
+    {
+        auto this_ = (ObjectData *) serv->ptr2;
+        auto args = Array();
+        args.append(Variant(this_));
+        args.append(Variant(info->fd));
+        args.append(Variant(info->from_id));
+        const Variant callback = this_->o_get("close");
+        vm_call_user_func(callback, args);
     }
 
     static bool HHVM_METHOD(swoole_server, __construct, const String &host, int port, int mode = SW_MODE_PROCESS,
@@ -185,6 +263,14 @@ namespace HPHP
         {
             raise_error("create server failed. Error: %s", sw_error);
         }
+        if (!this_->o_get("connect", false).isNull())
+        {
+            serv->onConnect = hhvm_swoole_onConnect;
+        }
+        if (!this_->o_get("close", false).isNull())
+        {
+            serv->onClose = hhvm_swoole_onClose;
+        }
         //-------------------------------------------------------------
         serv->onReceive = hhvm_swoole_onReceive;
         serv->onTask = NULL;
@@ -197,11 +283,68 @@ namespace HPHP
         return true;
     }
 
+    static bool HHVM_METHOD(swoole_server, send, int fd, const String &data)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return false;
+        }
+        if (data.length() <= 0)
+        {
+            raise_warning("data is empty.");
+            return false;
+        }
+        return swServer_tcp_send(swoole_server_object, fd, (char *)data.c_str(), data.length()) == SW_OK ? true : false;
+    }
+
+    static bool HHVM_METHOD(swoole_server, close, int fd, bool reset = false)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return false;
+        }
+
+        if (swIsMaster())
+        {
+            raise_warning("Cannot close connection in master process.");
+            return false;
+        }
+
+        swConnection *conn = swServer_connection_verify_no_ssl(swoole_server_object, fd);
+        if (!conn)
+        {
+            return false;
+        }
+
+        //Reset send buffer, Immediately close the connection.
+        if (reset)
+        {
+            conn->close_reset = 1;
+        }
+
+        int ret;
+        if (!swIsWorker())
+        {
+            swWorker *worker = swServer_get_worker(swoole_server_object, conn->fd % swoole_server_object->worker_num);
+            swDataHead ev;
+            ev.type = SW_EVENT_CLOSE;
+            ev.fd = fd;
+            ev.from_id = conn->from_id;
+            ret = swWorker_send2worker(worker, &ev, sizeof(ev), SW_PIPE_MASTER);
+        }
+        else
+        {
+            ret = swoole_server_object->factory.end(&swoole_server_object->factory, fd);
+        }
+        return ret == SW_OK ? true : false;
+    }
+
     static class SwooleExtension : public Extension
     {
     public:
-        SwooleExtension() :
-                Extension("swoole")
+        SwooleExtension() : Extension("swoole")
         {
         }
 
@@ -210,6 +353,8 @@ namespace HPHP
             HHVM_ME(swoole_server, __construct);
             HHVM_ME(swoole_server, on);
             HHVM_ME(swoole_server, set);
+            HHVM_ME(swoole_server, send);
+            HHVM_ME(swoole_server, close);
             HHVM_ME(swoole_server, start);
             loadSystemlib();
         }
