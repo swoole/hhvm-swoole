@@ -33,3 +33,19 @@ Run
 hhvm -vDynamicExtensions.0=./hhvm_swoole.so tcp_server.php
 hhvm -vDynamicExtensions.0=./hhvm_swoole.so udp_server.php
 ```
+
+Supported features
+====
+* Swoole\Server->__construct
+* Swoole\Server->on (onWorkerStart/onWorkerStop/onConnect/onClose/onReceive/onPacket/onTask/onFinish)
+* Swoole\Server->set
+* Swoole\Server->start
+* Swoole\Server->task
+* Swoole\Server->send
+* Swoole\Server->sendto
+* Swoole\Server->sendfile
+* Swoole\Server->close
+* Swoole\Server->exist
+* Swoole\Server->getClientInfo
+
+
