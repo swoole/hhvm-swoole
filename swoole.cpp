@@ -62,6 +62,15 @@ namespace HPHP
 {
     static swServer *swoole_server_object;
 
+    const StaticString s_SWOOLE_BASE("SWOOLE_BASE");
+    const StaticString s_SWOOLE_PROCESS("SWOOLE_PROCESS");
+    const StaticString s_SWOOLE_SOCK_TCP("SWOOLE_SOCK_TCP");
+    const StaticString s_SWOOLE_SOCK_TCP6("SWOOLE_SOCK_TCP6");
+    const StaticString s_SWOOLE_SOCK_UDP("SWOOLE_SOCK_UDP");
+    const StaticString s_SWOOLE_SOCK_UDP6("SWOOLE_SOCK_UDP6");
+    const StaticString s_SWOOLE_SOCK_UNIX_DGRAM("SWOOLE_SOCK_UNIX_DGRAM");
+    const StaticString s_SWOOLE_SOCK_UNIX_STREAM("SWOOLE_SOCK_UNIX_STREAM");
+
     static Variant get_recv_data(swEventData *req, char *header, uint32_t header_length)
     {
         char *data_ptr = NULL;
@@ -128,6 +137,54 @@ namespace HPHP
         return 0;
     }
 
+    static int hhvm_swoole_onPacket(swServer *serv, swEventData *req)
+    {
+        auto this_ = (ObjectData *) serv->ptr2;
+        swDgramPacket *packet;
+        auto args = Array();
+        auto clientInfo = Array();
+        Variant data;
+
+        swString *buffer = swWorker_get_buffer(serv, req->info.from_id);
+        packet = (swDgramPacket*) buffer->str;
+
+        clientInfo.set(String("server_socket"), Variant(req->info.from_fd));
+
+        //udp ipv4
+        if (req->info.type == SW_EVENT_UDP)
+        {
+            struct in_addr sin_addr;
+            sin_addr.s_addr = packet->addr.v4.s_addr;
+            char *address = inet_ntoa(sin_addr);
+            clientInfo.set(String("address"), String(address));
+            clientInfo.set(String("port"), Variant(packet->port));
+            data = Variant(String(packet->data, packet->length, CopyString));
+        }
+        //udp ipv6
+        else if (req->info.type == SW_EVENT_UDP6)
+        {
+            char tmp[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &packet->addr.v6, tmp, sizeof(tmp));
+            clientInfo.set(String("address"), String(tmp));
+            clientInfo.set(String("port"), Variant(packet->port));
+            data = Variant(String(packet->data, packet->length, CopyString));
+        }
+        //unix dgram
+        else if (req->info.type == SW_EVENT_UNIX_DGRAM)
+        {
+            clientInfo.set(String("address"), String(packet->data, packet->addr.un.path_length, CopyString));
+            clientInfo.set(String("port"), Variant(packet->port));
+            data = Variant(String(packet->data + packet->addr.un.path_length, packet->length - packet->addr.un.path_length, CopyString));
+        }
+
+        args.append(Variant(this_));
+        args.append(data);
+        args.append(Variant(clientInfo));
+        const Variant callback = this_->o_get("onPacket");
+        vm_call_user_func(callback, args);
+        return SW_OK;
+    }
+
     static void hhvm_swoole_onConnect(swServer *serv, swDataHead *info)
     {
         auto this_ = (ObjectData *) serv->ptr2;
@@ -147,6 +204,34 @@ namespace HPHP
         args.append(Variant(info->fd));
         args.append(Variant(info->from_id));
         const Variant callback = this_->o_get("onClose");
+        vm_call_user_func(callback, args);
+    }
+
+    static void hhvm_swoole_onWorkerStart(swServer *serv, int worker_id)
+    {
+        auto this_ = (ObjectData *) serv->ptr2;
+        auto args = Array();
+        args.append(Variant(this_));
+        args.append(Variant(worker_id));
+        const Variant callback = this_->o_get("onWorkerStart", false);
+
+        this_->o_set("master_pid", Variant(SwooleGS->master_pid));
+        this_->o_set("manager_pid", Variant(SwooleGS->manager_pid));
+        this_->o_set("worker_id", Variant(worker_id));
+
+        if (!callback.isNull())
+        {
+            vm_call_user_func(callback, args);
+        }
+    }
+
+    static void hhvm_swoole_onWorkerStop(swServer *serv, int worker_id)
+    {
+        auto this_ = (ObjectData *) serv->ptr2;
+        auto args = Array();
+        args.append(Variant(this_));
+        args.append(Variant(worker_id));
+        const Variant callback = this_->o_get("onWorkerStop");
         vm_call_user_func(callback, args);
     }
 
@@ -263,10 +348,17 @@ namespace HPHP
         {
             serv->onClose = hhvm_swoole_onClose;
         }
-        //-------------------------------------------------------------
+        if (!this_->o_get("onWorkerStop", false).isNull())
+        {
+            serv->onWorkerStop = hhvm_swoole_onWorkerStop;
+        }
+        if (!this_->o_get("onPacket", false).isNull())
+        {
+            serv->onPacket = hhvm_swoole_onPacket;
+        }
         serv->onReceive = hhvm_swoole_onReceive;
+        serv->onWorkerStart = hhvm_swoole_onWorkerStart;
         serv->onTask = NULL;
-        serv->onPacket = NULL;
         serv->ptr2 = this_;
         if (swServer_start(serv) < 0)
         {
@@ -288,6 +380,53 @@ namespace HPHP
             return false;
         }
         return swServer_tcp_send(swoole_server_object, fd, (char *)data.c_str(), data.length()) == SW_OK ? true : false;
+    }
+
+    static bool HHVM_METHOD(swoole_server, sendto, const String &ip, int port, const String &data, int server_socket = -1)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return false;
+        }
+
+        if (data.length() <= 0)
+        {
+            raise_warning("data is empty.");
+            return false;
+        }
+        bool ipv6 = false;
+        if (strchr(ip.c_str(), ':'))
+        {
+            ipv6 = true;
+        }
+
+        if (ipv6 && swoole_server_object->udp_socket_ipv6 <= 0)
+        {
+            raise_warning("You must add an UDP6 listener to server before using sendto.");
+            return false;
+        }
+        else if (swoole_server_object->udp_socket_ipv4 <= 0)
+        {
+            raise_warning("You must add an UDP listener to server before using sendto.");
+            return false;
+        }
+
+        if (server_socket < 0)
+        {
+            server_socket = ipv6 ?  swoole_server_object->udp_socket_ipv6 : swoole_server_object->udp_socket_ipv4;
+        }
+
+        int ret;
+        if (ipv6)
+        {
+            ret = swSocket_udp_sendto6(server_socket, (char*)ip.c_str(), port, (char*)data.c_str(), data.length());
+        }
+        else
+        {
+            ret = swSocket_udp_sendto(server_socket, (char*)ip.c_str(), port,(char*)data.c_str(), data.length());
+        }
+        return ret == SW_OK ? true : false;
     }
 
     static bool HHVM_METHOD(swoole_server, close, int fd, bool reset = false)
@@ -342,10 +481,35 @@ namespace HPHP
 
         virtual void moduleInit()
         {
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_BASE.get(), SW_MODE_BASE
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_PROCESS.get(), SW_MODE_PROCESS
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_SOCK_TCP.get(), SW_SOCK_TCP
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_SOCK_TCP6.get(), SW_SOCK_TCP6
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_SOCK_UDP.get(), SW_SOCK_UDP
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_SOCK_UDP6.get(), SW_SOCK_UDP6
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_SOCK_UNIX_DGRAM.get(), SW_SOCK_UNIX_DGRAM
+            );
+            Native::registerConstant<KindOfInt64>(
+                    s_SWOOLE_SOCK_UNIX_STREAM.get(), SW_SOCK_UNIX_STREAM
+            );
             HHVM_ME(swoole_server, __construct);
             HHVM_ME(swoole_server, on);
             HHVM_ME(swoole_server, set);
             HHVM_ME(swoole_server, send);
+            HHVM_ME(swoole_server, sendto);
             HHVM_ME(swoole_server, close);
             HHVM_ME(swoole_server, start);
             loadSystemlib();

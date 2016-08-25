@@ -11,6 +11,8 @@ class Swoole_Server {
   <<__Native>>
   function send(int $fd, string $data): bool;
   <<__Native>>
+  function sendto(string $address, int $port, string $data, int $server_socket = -1): bool;
+  <<__Native>>
   function close(int $fd, bool $reset = false): bool;
 }
 
