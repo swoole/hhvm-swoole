@@ -420,7 +420,7 @@ static int hhvm_swoole_onFinish(swServer *serv, swEventData *req)
     vm_call_user_func(callback, args);
     if (swTask_type(req) & SW_TASK_CALLBACK)
     {
-        this_->o_get("task_callbacks").asArrRef().remove(req->info.fd);
+        this_->o_realProp("task_callbacks", ObjectData::RealPropUnchecked)->asArrRef().remove(req->info.fd);
     }
     return SW_OK;
 }
