@@ -123,7 +123,7 @@ namespace HPHP
         args.append(Variant(req->info.fd));
         args.append(Variant(req->info.from_id));
         args.append(get_recv_data(req, nullptr, 0));
-        const Variant callback = this_->o_get("receive");
+        const Variant callback = this_->o_get("onReceive");
         vm_call_user_func(callback, args);
         return 0;
     }
@@ -135,7 +135,7 @@ namespace HPHP
         args.append(Variant(this_));
         args.append(Variant(info->fd));
         args.append(Variant(info->from_id));
-        const Variant callback = this_->o_get("connect");
+        const Variant callback = this_->o_get("onConnect");
         vm_call_user_func(callback, args);
     }
 
@@ -146,7 +146,7 @@ namespace HPHP
         args.append(Variant(this_));
         args.append(Variant(info->fd));
         args.append(Variant(info->from_id));
-        const Variant callback = this_->o_get("close");
+        const Variant callback = this_->o_get("onClose");
         vm_call_user_func(callback, args);
     }
 
@@ -198,7 +198,7 @@ namespace HPHP
             return false;
         }
 
-        const char *callback_name[PHP_SERVER_CALLBACK_NUM] = {
+        const String callback_name[PHP_SERVER_CALLBACK_NUM] = {
                 "Connect",
                 "Receive",
                 "Close",
@@ -213,22 +213,14 @@ namespace HPHP
                 "ManagerStart",
                 "ManagerStop",
                 "PipeMessage",
-                NULL,
-                NULL,
-                NULL,
-                NULL,
         };
 
         bool isSupportType = false;
         for (int i = 0; i < PHP_SERVER_CALLBACK_NUM; i++)
         {
-            if (callback_name[i] == NULL)
+            if (strcasecmp(event.c_str(), callback_name[i].c_str()) == 0)
             {
-                continue;
-            }
-            if (strncasecmp(callback_name[i], event.c_str(), event.length()) == 0)
-            {
-                this_->o_set(event, callback);
+                this_->o_set("on" + callback_name[i], callback);
                 isSupportType = true;
                 break;
             }
@@ -263,11 +255,11 @@ namespace HPHP
         {
             raise_error("create server failed. Error: %s", sw_error);
         }
-        if (!this_->o_get("connect", false).isNull())
+        if (!this_->o_get("onConnect", false).isNull())
         {
             serv->onConnect = hhvm_swoole_onConnect;
         }
-        if (!this_->o_get("close", false).isNull())
+        if (!this_->o_get("onClose", false).isNull())
         {
             serv->onClose = hhvm_swoole_onClose;
         }
