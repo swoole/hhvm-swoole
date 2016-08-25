@@ -14,5 +14,5 @@ fi
 
 $HHVM \
   -vDynamicExtensions.0=${DIRNAME}/hhvm_swoole.so \
-  ${DIRNAME}/test.php
+  ${DIRNAME}/tcp_server.php
 

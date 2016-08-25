@@ -2,9 +2,8 @@ hhvm-swoole
 =================
 Swoole on HHVM.
 
-Build
+Build libswoole.so
 ====
-Build swoole library
 ```shell
 git clone https://github.com/swoole/swoole-src.git
 cd swoole-src
@@ -16,6 +15,8 @@ cp lib/libswoole.so.1.8.11 /usr/local/lib/libswoole.so
 sudo ldconfig
 ```
 
+Build hhvm_swoole.so
+====
 ```shell
 git clone https://github.com/swoole/hhvm-swoole.git
 cd hhvm-swoole
@@ -24,6 +25,11 @@ cp swoole/config.h config.h
 hphpize
 cmake .
 make
-./test.sh
 ```
 
+Run
+====
+```shell
+hhvm -vDynamicExtensions.0=./hhvm_swoole.so tcp_server.php
+hhvm -vDynamicExtensions.0=./hhvm_swoole.so udp_server.php
+```
