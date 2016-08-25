@@ -11,14 +11,16 @@ $serv->on("workerStart", function($serv, $workerId) {
 });
 
 $serv->on("receive", function($serv, $fd, $reactorId, $data) {
-    var_dump($serv, $fd, $reactorId, $data);
+    //var_dump($serv, $fd, $reactorId, $data);
     $serv->send($fd, "Swoole: $data");
-    $serv->task("hello world");
+    $serv->task("hello world", -1, function($serv, $task_id, $result) {
+        echo "task#{$task_id} is finished\n";
+        var_dump($result);
+    });
 });
 
 $serv->on("connect", function($serv, $fd, $reactorId) {
     echo "Client#$fd connect\n";
-    var_dump($serv->getClientInfo($fd));
 });
 
 $serv->on("close", function($serv, $fd, $reactorId) {
@@ -26,7 +28,7 @@ $serv->on("close", function($serv, $fd, $reactorId) {
 });
 
 $serv->on("task", function($serv, $task_id, $from_id, $data) {
-    var_dump( $task_id, $from_id, $data);
+    var_dump($task_id, $from_id, $data);
     return array("tt" => time(), "data" => "hhvm");
 });
 

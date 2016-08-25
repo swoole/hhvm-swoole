@@ -69,7 +69,7 @@ const StaticString s_SWOOLE_SOCK_UDP6("SWOOLE_SOCK_UDP6");
 const StaticString s_SWOOLE_SOCK_UNIX_DGRAM("SWOOLE_SOCK_UNIX_DGRAM");
 const StaticString s_SWOOLE_SOCK_UNIX_STREAM("SWOOLE_SOCK_UNIX_STREAM");
 
-static int task_id;
+static int task_id = 2;
 
 static int check_task_param(int dst_worker_id)
 {
@@ -411,7 +411,7 @@ static int hhvm_swoole_onFinish(swServer *serv, swEventData *req)
     Variant callback;
     if (swTask_type(req) & SW_TASK_CALLBACK)
     {
-        callback = this_->o_get("task_callbacks").toArray()[req->info.fd];
+        callback = this_->o_get("task_callbacks").asArrRef()[req->info.fd];
     }
     else
     {
@@ -420,7 +420,7 @@ static int hhvm_swoole_onFinish(swServer *serv, swEventData *req)
     vm_call_user_func(callback, args);
     if (swTask_type(req) & SW_TASK_CALLBACK)
     {
-        this_->o_get("task_callbacks").toArray().remove(req->info.fd);
+        this_->o_get("task_callbacks").asArrRef().remove(req->info.fd);
     }
     return SW_OK;
 }
@@ -624,7 +624,7 @@ static bool HHVM_METHOD(swoole_server, set, const Array& setting)
     if (setting.exists(String("task_worker_num")))
     {
         SwooleG.task_worker_num = setting[String("task_worker_num")].toInt16();
-        this_->o_set(String("task_callbacks"), Array());
+        this_->o_set("task_callbacks", Array::Create());
     }
     //task ipc mode, 1,2,3
     if (setting.exists(String("task_ipc_mode")))
@@ -908,8 +908,8 @@ static int HHVM_METHOD(swoole_server, task, const Variant &data, int dst_worker_
             return false;
         }
         swTask_type(&buf) |= SW_TASK_CALLBACK;
-        auto callbacks = this_->o_get("task_callbacks").toArray();
-        callbacks.set(buf.info.fd, callback);
+        auto name = this_->o_realProp("task_callbacks", ObjectData::RealPropUnchecked);
+        name->asArrRef().add(buf.info.fd, callback);
     }
 
     swTask_type(&buf) |= SW_TASK_NONBLOCK;
