@@ -19,6 +19,7 @@
 #include "hphp/runtime/vm/native-data.h"
 #include "hphp/runtime/ext/sockets/ext_sockets.h"
 #include "hphp/runtime/base/request-local.h"
+#include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/zend-string.h"
@@ -31,7 +32,7 @@
 enum php_swoole_server_callback_type
 {
     //--------------------------Swoole\Server--------------------------
-            SW_SERVER_CB_onConnect,        //worker(event)
+    SW_SERVER_CB_onConnect,        //worker(event)
     SW_SERVER_CB_onReceive,        //worker(event)
     SW_SERVER_CB_onClose,          //worker(event)
     SW_SERVER_CB_onPacket,         //worker(event)
@@ -60,19 +61,14 @@ using namespace std;
 
 namespace HPHP
 {
-    struct swServerData
-    {
-        const Variant *callbacks[PHP_SERVER_CALLBACK_NUM];
-    };
-
     static swServer *swoole_server_object;
 
     static int hhvm_swoole_onReceive(swServer *serv, swEventData *req)
     {
-        auto object = Native::data<swServerData>((ObjectData *) serv->ptr2);
-        Array args;
-        const Variant *callback = object->callbacks[SW_SERVER_CB_onReceive];
-        Variant retval = vm_call_user_func(*callback, args);
+        auto this_ = (ObjectData *) serv->ptr2;
+        auto args = make_packed_array(String("hello"), String("world"));
+        const Variant callback = this_->o_get("receive");
+        Variant retval = vm_call_user_func(callback, args);
         return 0;
     }
 
@@ -90,8 +86,6 @@ namespace HPHP
             return false;
         }
 
-        auto object = Native::data<swServerData>(this_);
-        bzero(object, sizeof(swServerData));
         swoole_server_object = (swServer *) malloc(sizeof(swServer));
         swServer *serv = swoole_server_object;
         swServer_init(serv);
@@ -147,13 +141,8 @@ namespace HPHP
                 NULL,
         };
 
-        int i;
-        char property_name[128];
-        int l_property_name = 0;
-        memcpy(property_name, "on", 2);
-
-        swServerData *object = Native::data<swServerData>(this_);
-        for (i = 0; i < PHP_SERVER_CALLBACK_NUM; i++)
+        bool isSupportType = false;
+        for (int i = 0; i < PHP_SERVER_CALLBACK_NUM; i++)
         {
             if (callback_name[i] == NULL)
             {
@@ -161,27 +150,22 @@ namespace HPHP
             }
             if (strncasecmp(callback_name[i], event.c_str(), event.length()) == 0)
             {
-                memcpy(property_name + 2, callback_name[i], event.length());
-                l_property_name = event.length() + 2;
-                property_name[l_property_name] = '\0';
-                object->callbacks[i] = &callback;
-
+                this_->o_set(event, callback);
+                isSupportType = true;
                 break;
             }
         }
 
-        if (l_property_name == 0)
+        if (!isSupportType)
         {
             raise_warning("Unknown event types[%s]", event.c_str());
             return false;
         }
-
         return true;
     }
 
     static bool HHVM_METHOD(swoole_server, set, const Array&)
     {
-        std::cout << "setting" << std::endl;
         return true;
     }
 
@@ -193,15 +177,7 @@ namespace HPHP
             return false;
         }
 
-        swServerData *object = Native::data<swServerData>(this_);
         swServer *serv = swoole_server_object;
-
-        swBreakPoint();
-
-        if (object->callbacks[SW_SERVER_CB_onReceive] == NULL)
-        {
-            raise_error("require onReceive/onPacket callback");
-        }
         /**
          * create swoole server
          */
