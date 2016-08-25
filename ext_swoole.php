@@ -1,7 +1,7 @@
 <?hh
 class Swoole_Server {
   <<__Native>>
-  function __construct(string $host, int $port, int $mode=3, int $type = 3);
+  function __construct(string $host, int $port, int $mode=3, int $type = 1);
   <<__Native>>
   function on(string $eventType, mixed $callback) : bool;
   <<__Native>>
@@ -14,6 +14,12 @@ class Swoole_Server {
   function sendto(string $address, int $port, string $data, int $server_socket = -1): bool;
   <<__Native>>
   function close(int $fd, bool $reset = false): bool;
+  <<__Native>>
+  function sendfile(int $fd, string $file, int $offset = 0): bool;
+  <<__Native>>
+  function exist(int $fd): bool;
+  <<__Native>>
+  function getClientInfo(int $fd, int $reactorId = 0, bool $noCheckConnection = false): array;
 }
 
 namespace Swoole

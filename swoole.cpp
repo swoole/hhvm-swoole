@@ -28,6 +28,8 @@
 #include "swoole/include/swoole.h"
 #include "swoole/include/Server.h"
 
+#include <sys/stat.h>
+
 enum php_swoole_server_callback_type
 {
     //--------------------------Swoole\Server--------------------------
@@ -70,6 +72,66 @@ namespace HPHP
     const StaticString s_SWOOLE_SOCK_UDP6("SWOOLE_SOCK_UDP6");
     const StaticString s_SWOOLE_SOCK_UNIX_DGRAM("SWOOLE_SOCK_UNIX_DGRAM");
     const StaticString s_SWOOLE_SOCK_UNIX_STREAM("SWOOLE_SOCK_UNIX_STREAM");
+
+    static int task_id;
+
+    static int check_task_param(int dst_worker_id)
+    {
+        if (SwooleG.task_worker_num < 1)
+        {
+            raise_warning("Task method cannot use, Please set task_worker_num.");
+            return SW_ERR;
+        }
+        if (dst_worker_id >= SwooleG.task_worker_num)
+        {
+            raise_warning("worker_id must be less than serv->task_worker_num.");
+            return SW_ERR;
+        }
+        if (!swIsWorker())
+        {
+            raise_warning("The method can only be used in the worker process.");
+            return SW_ERR;
+        }
+        return SW_OK;
+    }
+
+    static int task_pack(swEventData *task, const Variant &data)
+    {
+        task->info.type = SW_EVENT_TASK;
+        //field fd save task_id
+        task->info.fd = task_id++;
+        //field from_id save the worker_id
+        task->info.from_id = SwooleWG.id;
+        swTask_type(task) = 0;
+
+        String _data;
+        //need serialize
+        if (!data.isString())
+        {
+            //serialize
+            swTask_type(task) |= SW_TASK_SERIALIZE;
+            _data = f_serialize(data);
+        }
+        else
+        {
+            _data = data.toString();
+        }
+
+        if (_data.length() >= SW_IPC_MAX_SIZE - sizeof(task->info))
+        {
+            if (swTaskWorker_large_pack(task, (char *) _data.c_str(), _data.length()) < 0)
+            {
+                raise_warning("large task pack failed()");
+                return SW_ERR;
+            }
+        }
+        else
+        {
+            memcpy(task->data, (char *) _data.c_str(), _data.length());
+            task->info.len = _data.length();
+        }
+        return task->info.fd;
+    }
 
     static Variant get_recv_data(swEventData *req, char *header, uint32_t header_length)
     {
@@ -472,6 +534,163 @@ namespace HPHP
         return ret == SW_OK ? true : false;
     }
 
+    static int HHVM_METHOD(swoole_server, task, const Variant &data, int dst_worker_id, const Variant &callback)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return false;
+        }
+        swEventData buf;
+
+        if (check_task_param(dst_worker_id) < 0)
+        {
+            return false;
+        }
+
+        if (task_pack(&buf, data) < 0)
+        {
+            return false;
+        }
+
+        if (!callback.isNull())
+        {
+            if (!is_callable(callback))
+            {
+                raise_warning("Function '%s' is not callable", callback.toString().c_str());
+                return false;
+            }
+            swTask_type(&buf) |= SW_TASK_CALLBACK;
+            auto callbacks = this_->o_get("task_callbacks").toArray();
+            callbacks.set(buf.info.fd, callback);
+        }
+
+        swTask_type(&buf) |= SW_TASK_NONBLOCK;
+        if (swProcessPool_dispatch(&SwooleGS->task_workers, &buf, (int*) &dst_worker_id) >= 0)
+        {
+            sw_atomic_fetch_add(&SwooleStats->tasking_num, 1);
+            return buf.info.fd;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    static bool HHVM_METHOD(swoole_server, exist, int fd)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return false;
+        }
+
+        swConnection *conn = swServer_connection_verify_no_ssl(swoole_server_object, fd);
+        if (!conn || conn->active == 0 || conn->closed)
+        {
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    static bool HHVM_METHOD(swoole_server, sendfile, int fd, const String &file, long offset = 0)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return false;
+        }
+
+        //check fd
+        if (fd <= 0 || fd > SW_MAX_SOCKET_ID)
+        {
+            swoole_error_log(SW_LOG_WARNING, SW_ERROR_SESSION_INVALID_ID, "invalid fd[%d].", fd);
+            return false;
+        }
+
+        swConnection *conn = swServer_connection_verify_no_ssl(swoole_server_object, fd);
+        if (!conn || conn->active == 0 || conn->closed)
+        {
+            return false;
+        }
+        else
+        {
+            struct stat file_stat;
+            if (stat(file.c_str(), &file_stat) < 0)
+            {
+                raise_warning("stat(%s) failed.", file.c_str());
+                return false;
+            }
+
+            if (file_stat.st_size <= offset)
+            {
+                raise_warning("file[offset=%ld] is empty.", offset);
+                return false;
+            }
+
+            return swServer_tcp_sendfile(swoole_server_object, fd, (char *)file.c_str(), file.length(), offset) == SW_OK ? true : false;
+        }
+    }
+
+    static Variant HHVM_METHOD(swoole_server, getClientInfo, int fd, int reactorId, bool noCheckConnection)
+    {
+        if (SwooleGS->start == 0)
+        {
+            raise_warning("Server is not running.");
+            return Variant(false);
+        }
+
+        swConnection *conn = swServer_connection_verify(swoole_server_object, fd);
+        if (!conn)
+        {
+            return Variant(false);
+        }
+        //connection is closed
+        if (conn->active == 0 && !noCheckConnection)
+        {
+            return Variant(false);
+        }
+        else
+        {
+            auto retval = Array();
+
+            if (swoole_server_object->dispatch_mode == SW_DISPATCH_UIDMOD)
+            {
+                retval.set(String("uid"), Variant(conn->uid));
+            }
+
+            swListenPort *port = swServer_get_port(swoole_server_object, conn->fd);
+            if (port && port->open_websocket_protocol)
+            {
+                retval.set(String("websocket_status"), Variant(conn->websocket_status));
+            }
+#ifdef SW_USE_OPENSSL
+            if (conn->ssl_client_cert.length > 0)
+            {
+                retval.set(String("ssl_client_cert"), Variant(String(conn->ssl_client_cert.str, conn->ssl_client_cert.length - 1, CopyString)));
+            }
+#endif
+            //server socket
+            swConnection *from_sock = swServer_connection_get(swoole_server_object, conn->from_fd);
+            if (from_sock)
+            {
+                retval.set(String("server_port"), Variant(swConnection_get_port(from_sock)));
+            }
+            retval.set(String("server_fd"), Variant(conn->from_fd));
+            retval.set(String("socket_type"), Variant(conn->socket_type));
+            retval.set(String("remote_port"), Variant(swConnection_get_port(conn)));
+            retval.set(String("remote_ip"), Variant(String(swConnection_get_ip(conn))));
+            retval.set(String("from_id"), Variant( conn->from_id));
+            retval.set(String("connect_time"), Variant(conn->connect_time));
+            retval.set(String("last_time"), Variant(conn->last_time));
+            retval.set(String("close_errno"), Variant(conn->close_errno));
+            return Variant(retval);
+        }
+    }
+
     static class SwooleExtension : public Extension
     {
     public:
@@ -511,6 +730,10 @@ namespace HPHP
             HHVM_ME(swoole_server, send);
             HHVM_ME(swoole_server, sendto);
             HHVM_ME(swoole_server, close);
+            HHVM_ME(swoole_server, getClientInfo);
+            HHVM_ME(swoole_server, exist);
+            HHVM_ME(swoole_server, sendfile);
+            HHVM_ME(swoole_server, task);
             HHVM_ME(swoole_server, start);
             loadSystemlib();
         }
