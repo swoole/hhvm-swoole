@@ -1048,7 +1048,7 @@ public:
     virtual void moduleInit()
     {
         Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_BASE.get(), SW_MODE_BASE
+                s_SWOOLE_BASE.get(), SW_MODE_SINGLE
         );
         Native::registerConstant<KindOfInt64>(
                 s_SWOOLE_PROCESS.get(), SW_MODE_PROCESS
