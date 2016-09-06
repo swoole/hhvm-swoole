@@ -13,15 +13,7 @@
   | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
   +----------------------------------------------------------------------+
 */
-#include "hphp/runtime/ext/extension.h"
-#include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/vm/native-data.h"
-#include "hphp/runtime/base/request-local.h"
-#include "hphp/runtime/base/array-init.h"
-
-#include "config.h"
-#include "swoole/include/swoole.h"
-#include "swoole/include/Server.h"
+#include "hhvm_swoole.h"
 
 #include <sys/stat.h>
 
@@ -68,6 +60,12 @@ const StaticString s_SWOOLE_SOCK_UDP("SWOOLE_SOCK_UDP");
 const StaticString s_SWOOLE_SOCK_UDP6("SWOOLE_SOCK_UDP6");
 const StaticString s_SWOOLE_SOCK_UNIX_DGRAM("SWOOLE_SOCK_UNIX_DGRAM");
 const StaticString s_SWOOLE_SOCK_UNIX_STREAM("SWOOLE_SOCK_UNIX_STREAM");
+const StaticString s_SWOOLE_TCP("SWOOLE_TCP");
+const StaticString s_SWOOLE_TCP6("SWOOLE_TCP6");
+const StaticString s_SWOOLE_UDP("SWOOLE_UDP");
+const StaticString s_SWOOLE_UDP6("SWOOLE_UDP6");
+const StaticString s_SWOOLE_UNIX_DGRAM("SWOOLE_UNIX_DGRAM");
+const StaticString s_SWOOLE_UNIX_STREAM("SWOOLE_UNIX_STREAM");
 
 static int task_id = 2;
 
@@ -453,14 +451,14 @@ static void hhvm_swoole_onWorkerStop(swServer *serv, int worker_id)
     vm_call_user_func(callback, args);
 }
 
+    static void HHVM_FUNCTION(swoole_set_process_name, const String &name)
+    {
+        return;
+    }
+
 static bool HHVM_METHOD(swoole_server, __construct, const String &host, int port, int mode = SW_MODE_PROCESS,
                         int type = SW_SOCK_TCP)
 {
-    if (!SwooleGS)
-    {
-        swoole_init();
-    }
-
     if (SwooleGS->start > 0)
     {
         raise_warning("server is already running. Unable to create swoole_server.");
@@ -1047,30 +1045,29 @@ public:
 
     virtual void moduleInit()
     {
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_BASE.get(), SW_MODE_SINGLE
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_PROCESS.get(), SW_MODE_PROCESS
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_SOCK_TCP.get(), SW_SOCK_TCP
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_SOCK_TCP6.get(), SW_SOCK_TCP6
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_SOCK_UDP.get(), SW_SOCK_UDP
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_SOCK_UDP6.get(), SW_SOCK_UDP6
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_SOCK_UNIX_DGRAM.get(), SW_SOCK_UNIX_DGRAM
-        );
-        Native::registerConstant<KindOfInt64>(
-                s_SWOOLE_SOCK_UNIX_STREAM.get(), SW_SOCK_UNIX_STREAM
-        );
+        swoole_init();
+
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_BASE.get(), SW_MODE_SINGLE);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_PROCESS.get(), SW_MODE_PROCESS);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_TCP.get(), SW_SOCK_TCP);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_TCP6.get(), SW_SOCK_TCP6);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_UDP.get(), SW_SOCK_UDP);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_UDP6.get(), SW_SOCK_UDP6);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_UNIX_DGRAM.get(), SW_SOCK_UNIX_DGRAM);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_UNIX_STREAM.get(), SW_SOCK_UNIX_STREAM);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_TCP.get(), SW_SOCK_TCP);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_TCP6.get(), SW_SOCK_TCP6);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_UDP.get(), SW_SOCK_UDP);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_UDP6.get(), SW_SOCK_UDP6);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_UNIX_DGRAM.get(), SW_SOCK_UNIX_DGRAM);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_UNIX_STREAM.get(), SW_SOCK_UNIX_STREAM);
+
+        HHVM_FE(swoole_set_process_name);
+        HHVM_FE(swoole_timer_tick);
+        HHVM_FE(swoole_timer_after);
+        HHVM_FE(swoole_timer_clear);
+        HHVM_FE(swoole_timer_exists);
+
         HHVM_ME(swoole_server, __construct);
         HHVM_ME(swoole_server, on);
         HHVM_ME(swoole_server, set);
