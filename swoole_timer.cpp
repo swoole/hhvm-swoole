@@ -18,26 +18,76 @@
 
 namespace HPHP
 {
-    enum TimerType
+    static Array timer_map;
+
+    TimerResource::TimerResource(const Variant &callback, bool tick)
     {
-        SW_TIMER_TICK, SW_TIMER_AFTER,
-    };
+        m_callback = callback;
+        m_tick = tick;
+        m_tnode = NULL;
+    }
 
-    typedef struct _swTimer_callback
+    int del_timer(swTimer_node *tnode)
     {
-        Variant &callback;
-        int type;
-    } swTimer_callback;
+        if (!timer_map.exists(tnode->id))
+        {
+            return SW_ERR;
+        }
+        timer_map.remove(tnode->id);
+        tnode->id = -1;
+        return SW_OK;
+    }
 
-    static swHashMap *timer_map;
+    void hhvm_swoole_onTimeout(swTimer *timer, swTimer_node *tnode)
+    {
+        auto args = Array();
+        auto tm_res = dyn_cast_or_null<TimerResource>(timer_map[tnode->id].toResource());
+        if (tm_res == nullptr)
+        {
+            raise_warning("supplied argument is not a valid cURL handle resource");
+            return;
+        }
 
-    static void php_swoole_onTimeout(swTimer *timer, swTimer_node *tnode);
-    static void php_swoole_onInterval(swTimer *timer, swTimer_node *tnode);
-    static long php_swoole_add_timer(int ms, const Variant &callback, int is_tick);
-    static int php_swoole_del_timer(swTimer_node *tnode);
-    static void php_swoole_check_timer(int msec);
+        auto callback = tm_res->getCallback();
 
-    static long php_swoole_add_timer(int ms, const Variant &callback, int is_tick)
+        args.append(Variant(tnode->id));
+        timer->_current_id = tnode->id;
+        vm_call_user_func(callback, args);
+        timer->_current_id = -1;
+        del_timer(tnode);
+    }
+
+    void hhvm_swoole_onInterval(swTimer *timer, swTimer_node *tnode)
+    {
+        auto args = Array();
+        auto tm_res = dyn_cast_or_null<TimerResource>(timer_map[tnode->id].toResource());
+        if (tm_res == nullptr)
+        {
+            raise_warning("supplied argument is not a valid cURL handle resource");
+            return;
+        }
+        auto callback = tm_res->getCallback();
+
+        args.append(Variant(tnode->id));
+        timer->_current_id = tnode->id;
+        vm_call_user_func(callback, args);
+        timer->_current_id = -1;
+
+        if (tnode->remove)
+        {
+            del_timer(tnode);
+        }
+    }
+
+    void timer_init(int msec)
+    {
+        swTimer_init(msec);
+        SwooleG.timer.onAfter = hhvm_swoole_onTimeout;
+        SwooleG.timer.onTick = hhvm_swoole_onInterval;
+        timer_map = Array::Create();
+    }
+
+    long add_timer(int ms, const Variant &callback, bool tick)
     {
         if (SwooleG.serv && swIsMaster())
         {
@@ -64,25 +114,13 @@ namespace HPHP
         {
             php_swoole_check_reactor();
         }
-
-        php_swoole_check_timer(ms);
-        swTimer_callback *cb = (swTimer_callback *) malloc(sizeof(swTimer_callback));
-        if (cb == NULL)
+        if (SwooleG.timer.fd == 0)
         {
-            raise_warning("malloc(%ld) failed.", sizeof(swTimer_callback));
-            return false;
-        }
-        cb->callback = callback;
-        if (is_tick)
-        {
-            cb->type = SW_TIMER_TICK;
-        }
-        else
-        {
-            cb->type = SW_TIMER_AFTER;
+            timer_init(ms);
         }
 
-        swTimer_node *tnode = swTimer_add(&SwooleG.timer, ms, is_tick, cb);
+        auto res = req::make<TimerResource>(callback, tick);
+        swTimer_node *tnode = swTimer_add(&SwooleG.timer, ms, tick ? 1 : 0, NULL);
         if (tnode == NULL)
         {
             raise_warning("addtimer failed.");
@@ -90,69 +128,15 @@ namespace HPHP
         }
         else
         {
-            swHashMap_add_int(timer_map, tnode->id, tnode);
+            res->set(tnode);
+            timer_map.set(tnode->id, Variant(res));
             return tnode->id;
-        }
-    }
-
-    static int php_swoole_del_timer(swTimer_node *tnode)
-    {
-        if (swHashMap_del_int(timer_map, tnode->id) < 0)
-        {
-            return SW_ERR;
-        }
-        tnode->id = -1;
-        swTimer_callback *cb = (swTimer_callback *) tnode->data;
-        if (!cb)
-        {
-            return SW_ERR;
-        }
-        free(cb);
-        return SW_OK;
-    }
-
-    static void php_swoole_onTimeout(swTimer *timer, swTimer_node *tnode)
-    {
-        swTimer_callback *cb = (swTimer_callback *) tnode->data;
-        auto args = Array();
-        const Variant callback = cb->callback;
-        args.append(Variant(tnode->id));
-        timer->_current_id = tnode->id;
-        vm_call_user_func(callback, args);
-        timer->_current_id = -1;
-        php_swoole_del_timer(tnode);
-    }
-
-    static void php_swoole_onInterval(swTimer *timer, swTimer_node *tnode)
-    {
-        swTimer_callback *cb = (swTimer_callback *)tnode->data;
-        auto args = Array();
-        const Variant callback = cb->callback;
-        args.append(Variant(tnode->id));
-        timer->_current_id = tnode->id;
-        vm_call_user_func(callback, args);
-        timer->_current_id = -1;
-
-        if (tnode->remove)
-        {
-            php_swoole_del_timer(tnode);
-        }
-    }
-
-    static void php_swoole_check_timer(int msec)
-    {
-        if (SwooleG.timer.fd == 0)
-        {
-            swTimer_init(msec);
-            SwooleG.timer.onAfter = php_swoole_onTimeout;
-            SwooleG.timer.onTick = php_swoole_onInterval;
-            timer_map = swHashMap_new(SW_HASHMAP_INIT_BUCKET_N, NULL);
         }
     }
 
     Variant HHVM_FUNCTION(swoole_timer_tick, long after_ms, const Variant &callback)
     {
-        long timer_id = php_swoole_add_timer(after_ms, callback, 1);
+        long timer_id = add_timer(after_ms, callback, true);
         if (timer_id < 0)
         {
             return Variant(false);
@@ -165,7 +149,7 @@ namespace HPHP
 
     Variant HHVM_FUNCTION(swoole_timer_after, long after_ms, const Variant &callback)
     {
-        long timer_id = php_swoole_add_timer(after_ms, callback, 0);
+        long timer_id = add_timer(after_ms, callback, false);
         if (timer_id < 0)
         {
             return Variant(false);
@@ -184,24 +168,24 @@ namespace HPHP
             return false;
         }
 
-        swTimer_node *tnode = (swTimer_node *) swHashMap_find_int(timer_map, id);
-        if (tnode == NULL)
+        auto tm_res = dyn_cast_or_null<TimerResource>(timer_map[id].toResource());
+        if (tm_res == nullptr)
         {
-            raise_warning("timer#%ld is not found.", id);
             return false;
         }
 
-        //current timer, cannot remove here.
+        auto callback = tm_res->getCallback();
+        swTimer_node *tnode = tm_res->get();
         if (tnode->id == SwooleG.timer._current_id)
         {
             tnode->remove = 1;
             return true;
         }
-
-        if (php_swoole_del_timer(tnode) < 0)
+        if (del_timer(tnode) < 0)
         {
             return false;
-        } else
+        }
+        else
         {
             swTimer_del(&SwooleG.timer, tnode);
             return true;
@@ -215,7 +199,6 @@ namespace HPHP
             raise_warning("no timer");
             return false;
         }
-        swTimer_node *tnode = (swTimer_node *) swHashMap_find_int(timer_map, id);
-        return tnode != NULL;
+        return timer_map.exists(id);
     }
 }
