@@ -12,6 +12,7 @@ phpize
 cmake .
 make swoole_shared
 cp lib/libswoole.so.1.8.11 /usr/local/lib/libswoole.so
+cp swoole_config.h /usr/local/include
 sudo ldconfig
 ```
 
@@ -32,6 +33,13 @@ Run
 ```shell
 hhvm -vDynamicExtensions.0=./hhvm_swoole.so tcp_server.php
 hhvm -vDynamicExtensions.0=./hhvm_swoole.so udp_server.php
+```
+
+HHVM settings
+====
+```shell
+vim /etc/hhvm/php.ini
+hhvm.dynamic_extensions[hhvm_swoole] = /root/hhvm-swoole/hhvm_swoole.so
 ```
 
 Supported features
