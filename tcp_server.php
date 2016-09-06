@@ -4,10 +4,13 @@
  * hhvm -vDynamicExtensions.0=./hhvm_swoole.so test.php
  */
 
-$serv = new Swoole\Server("127.0.0.1", 9501, SWOOLE_PROCESS);
+$serv = new Swoole\Server("127.0.0.1", 9501, SWOOLE_BASE);
 
 $serv->on("workerStart", function($serv, $workerId) {
     //var_dump($serv);
+    $serv->tick(1000, function() {
+        echo "hello\n";
+    });
 });
 
 $serv->on("receive", function($serv, $fd, $reactorId, $data) {
@@ -36,6 +39,6 @@ $serv->on("finish", function($serv, $task_id, $result) {
     var_dump($task_id, $result);
 });
 
-$serv->set(array("task_worker_num" => 2, "worker_num" => 2));
+$serv->set(array("worker_num" => 1));
 
 $serv->start();

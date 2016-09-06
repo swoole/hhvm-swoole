@@ -18,7 +18,33 @@
 
 namespace HPHP
 {
-    static Array timer_map;
+    class TimerResource : public ResourceData
+    {
+    public:
+        explicit TimerResource(const Variant &callback, bool tick);
+        ~TimerResource() {};
+
+        Variant getCallback()
+        {
+            return m_callback;
+        }
+
+        swTimer_node *getNode()
+        {
+            return m_tnode;
+        }
+
+        void setNode(swTimer_node *tnode)
+        {
+            m_tnode = tnode;
+        }
+
+    private:
+        bool m_tick;
+        Variant m_callback;
+        swTimer_node* m_tnode;
+    };
+
 
     TimerResource::TimerResource(const Variant &callback, bool tick)
     {
@@ -26,6 +52,8 @@ namespace HPHP
         m_tick = tick;
         m_tnode = NULL;
     }
+
+    static Array timer_map;
 
     int del_timer(swTimer_node *tnode)
     {
@@ -128,7 +156,7 @@ namespace HPHP
         }
         else
         {
-            res->set(tnode);
+            res->setNode(tnode);
             timer_map.set(tnode->id, Variant(res));
             return tnode->id;
         }
@@ -175,7 +203,7 @@ namespace HPHP
         }
 
         auto callback = tm_res->getCallback();
-        swTimer_node *tnode = tm_res->get();
+        swTimer_node *tnode = tm_res->getNode();
         if (tnode->id == SwooleG.timer._current_id)
         {
             tnode->remove = 1;

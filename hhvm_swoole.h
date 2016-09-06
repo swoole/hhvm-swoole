@@ -28,35 +28,6 @@
 
 namespace HPHP
 {
-    struct TimerResource : SweepableResourceData
-    {
-        DECLARE_RESOURCE_ALLOCATION(TimerResource)
-        CLASSNAME_IS("swoole_timer")
-        explicit TimerResource(const Variant &callback, bool tick);
-        ~TimerResource();
-
-    public:
-        Variant getCallback()
-        {
-            return m_callback;
-        }
-
-        swTimer_node *get()
-        {
-            return m_tnode;
-        }
-
-        void set(swTimer_node *tnode)
-        {
-            m_tnode = tnode;
-        }
-
-    private:
-        bool m_tick;
-        Variant m_callback;
-        swTimer_node* m_tnode;
-    };
-
     void php_swoole_check_reactor();
     void php_swoole_event_init(void);
     void php_swoole_event_wait();
