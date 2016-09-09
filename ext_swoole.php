@@ -30,6 +30,10 @@ class Swoole_Server {
     {
         return swoole_timer_tick($ms, $callback);
     }
+    function connection_info($fd, $reactorId = 0, bool $noCheckConnection = false): array;
+    {
+        return $this->getClientInfo($fd, $reactorId, $noCheckConnection);
+    }
 }
 
 <<__Native>>
