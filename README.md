@@ -10,10 +10,7 @@ cd swoole-src
 phpize
 ./configure
 cmake .
-make swoole_shared
-cp lib/libswoole.so.1.8.11 /usr/local/lib/libswoole.so
-cp swoole_config.h /usr/local/include
-sudo ldconfig
+make -j 4
 ```
 
 Build hhvm_swoole.so
@@ -22,7 +19,6 @@ Build hhvm_swoole.so
 git clone https://github.com/swoole/hhvm-swoole.git
 cd hhvm-swoole
 ln -s ../swoole-src/ swoole
-cp swoole/config.h config.h
 hphpize
 cmake .
 make
@@ -31,15 +27,16 @@ make
 Run
 ====
 ```shell
-hhvm -vDynamicExtensions.0=./hhvm_swoole.so tcp_server.php
-hhvm -vDynamicExtensions.0=./hhvm_swoole.so udp_server.php
+cd examples
+hhvm -vDynamicExtensions.0=../hhvm_swoole.so tcp_server.php
+hhvm -vDynamicExtensions.0=../hhvm_swoole.so udp_server.php
 ```
 
 HHVM settings
 ====
 ```shell
 vim /etc/hhvm/php.ini
-hhvm.dynamic_extensions[hhvm_swoole] = /root/hhvm-swoole/hhvm_swoole.so
+hhvm.dynamic_extensions[hhvm_swoole] = /your/path/to/hhvm-swoole/hhvm_swoole.so
 ```
 
 Supported features
@@ -55,5 +52,3 @@ Supported features
 * Swoole\Server->close
 * Swoole\Server->exist
 * Swoole\Server->getClientInfo
-
-
