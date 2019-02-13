@@ -75,25 +75,6 @@ namespace HPHP
             raise_warning("supplied argument is not a valid cURL handle resource");
             return;
         }
-
-        auto callback = tm_res->getCallback();
-
-        args.append(Variant(tnode->id));
-        timer->_current_id = tnode->id;
-        vm_call_user_func(callback, args);
-        timer->_current_id = -1;
-        del_timer(tnode);
-    }
-
-    void hhvm_swoole_onInterval(swTimer *timer, swTimer_node *tnode)
-    {
-        auto args = Array();
-        auto tm_res = dyn_cast_or_null<TimerResource>(timer_map[tnode->id].toResource());
-        if (tm_res == nullptr)
-        {
-            raise_warning("supplied argument is not a valid cURL handle resource");
-            return;
-        }
         auto callback = tm_res->getCallback();
 
         args.append(Variant(tnode->id));
@@ -101,7 +82,7 @@ namespace HPHP
         vm_call_user_func(callback, args);
         timer->_current_id = -1;
 
-        if (tnode->remove)
+        if (!tnode->interval || tnode->remove)
         {
             del_timer(tnode);
         }
@@ -109,9 +90,6 @@ namespace HPHP
 
     void timer_init(int msec)
     {
-        swTimer_init(msec);
-        SwooleG.timer.onAfter = hhvm_swoole_onTimeout;
-        SwooleG.timer.onTick = hhvm_swoole_onInterval;
         timer_map = Array::Create();
     }
 
@@ -120,11 +98,6 @@ namespace HPHP
         if (SwooleG.serv && swIsMaster())
         {
             raise_warning("cannot use timer in master process.");
-            return SW_ERR;
-        }
-        if (ms > 86400000)
-        {
-            raise_warning("The given parameters is too big.");
             return SW_ERR;
         }
         if (ms <= 0)
@@ -142,13 +115,9 @@ namespace HPHP
         {
             php_swoole_check_reactor();
         }
-        if (SwooleG.timer.fd == 0)
-        {
-            timer_init(ms);
-        }
 
         auto res = req::make<TimerResource>(callback, tick);
-        swTimer_node *tnode = swTimer_add(&SwooleG.timer, ms, tick ? 1 : 0, NULL);
+        swTimer_node *tnode = swTimer_add(&SwooleG.timer, ms, tick ? 1 : 0, nullptr, hhvm_swoole_onTimeout);
         if (tnode == NULL)
         {
             raise_warning("addtimer failed.");

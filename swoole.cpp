@@ -69,14 +69,14 @@ const StaticString s_SWOOLE_UNIX_STREAM("SWOOLE_UNIX_STREAM");
 
 static int task_id = 2;
 
-static int check_task_param(int dst_worker_id)
+static int check_task_param(swServer *serv, int dst_worker_id)
 {
-    if (SwooleG.task_worker_num < 1)
+    if (serv->task_worker_num < 1)
     {
         raise_warning("Task method cannot use, Please set task_worker_num.");
         return SW_ERR;
     }
-    if (dst_worker_id >= SwooleG.task_worker_num)
+    if (dst_worker_id >= serv->task_worker_num)
     {
         raise_warning("worker_id must be less than serv->task_worker_num.");
         return SW_ERR;
@@ -131,29 +131,23 @@ static Variant task_unpack(swEventData *task_result)
 {
     char *result_data_str;
     int result_data_len = 0;
-
-    int data_len;
-    char *data_str = NULL;
+    swString *result;
 
     /**
      * Large result package
      */
     if (swTask_type(task_result) & SW_TASK_TMPFILE)
     {
-        swTaskWorker_large_unpack(task_result, malloc, data_str, data_len);
+        result = swTaskWorker_large_unpack(task_result);
         /**
          * unpack failed
          */
-        if (data_len == -1)
+        if (result == nullptr)
         {
-            if (data_str)
-            {
-                free(data_str);
-            }
-            return null_variant;
+            return init_null_variant;
         }
-        result_data_str = data_str;
-        result_data_len = data_len;
+        result_data_str = result->str;
+        result_data_len = result->length;
     }
     else
     {
@@ -170,9 +164,9 @@ static Variant task_unpack(swEventData *task_result)
     {
         data = Variant(String(result_data_str, result_data_len, CopyString));
     }
-    if (data_str)
+    if (result)
     {
-        free(data_str);
+        swString_free(result);
     }
     return data;
 }
@@ -192,37 +186,14 @@ static bool task_finish(Variant result)
     {
         str = result.toString();
     }
-    ret = swTaskWorker_finish(swoole_server_object, (char *) str.c_str(), str.length(), flags);
+    ret = swTaskWorker_finish(swoole_server_object, (char *) str.c_str(), str.length(), flags, nullptr);
     return ret == 0 ? true : false;
 }
 
 static Variant get_recv_data(swEventData *req, char *header, uint32_t header_length)
 {
     char *data_ptr = NULL;
-    int data_len;
-
-#ifdef SW_USE_RINGBUFFER
-    swPackage package;
-    if (req->info.type == SW_EVENT_PACKAGE)
-    {
-        memcpy(&package, req->data, sizeof (package));
-
-        data_ptr = package.data;
-        data_len = package.length;
-    }
-#else
-    if (req->info.type == SW_EVENT_PACKAGE_END)
-    {
-        swString *worker_buffer = swWorker_get_buffer(SwooleG.serv, req->info.from_id);
-        data_ptr = worker_buffer->str;
-        data_len = worker_buffer->length;
-    }
-#endif
-    else
-    {
-        data_ptr = req->data;
-        data_len = req->info.len;
-    }
+    size_t data_len = swWorker_get_data(req, &data_ptr);
 
     Variant retval;
     if (header_length >= data_len)
@@ -239,13 +210,6 @@ static Variant get_recv_data(swEventData *req, char *header, uint32_t header_len
         memcpy(header, data_ptr, header_length);
     }
 
-#ifdef SW_USE_RINGBUFFER
-    if (req->info.type == SW_EVENT_PACKAGE)
-    {
-        swReactorThread *thread = swServer_get_thread(SwooleG.serv, req->info.from_id);
-        thread->buffer_input->free(thread->buffer_input, data_ptr);
-    }
-#endif
     return retval;
 }
 
@@ -265,42 +229,40 @@ static int hhvm_swoole_onReceive(swServer *serv, swEventData *req)
 static int hhvm_swoole_onPacket(swServer *serv, swEventData *req)
 {
     auto this_ = (ObjectData *) serv->ptr2;
-    swDgramPacket *packet;
     auto args = Array();
     auto clientInfo = Array();
     Variant data;
 
-    swString *buffer = swWorker_get_buffer(serv, req->info.from_id);
-    packet = (swDgramPacket*) buffer->str;
+    char address[128];
+
+    char *data_ptr;
+    swWorker_get_data(req, &data_ptr);
+    swDgramPacket *packet = (swDgramPacket*) data_ptr;
 
     clientInfo.set(String("server_socket"), Variant(req->info.from_fd));
 
     //udp ipv4
     if (req->info.type == SW_EVENT_UDP)
     {
-        struct in_addr sin_addr;
-        sin_addr.s_addr = packet->addr.v4.s_addr;
-        char *address = inet_ntoa(sin_addr);
+        inet_ntop(AF_INET, &packet->info.addr.inet_v4.sin_addr, address, sizeof(address));
         clientInfo.set(String("address"), String(address));
-        clientInfo.set(String("port"), Variant(packet->port));
-        data = Variant(String(packet->data, packet->length, CopyString));
+        clientInfo.set(String("port"), Variant(ntohs(packet->info.addr.inet_v4.sin_port)));
     }
     //udp ipv6
     else if (req->info.type == SW_EVENT_UDP6)
     {
-        char tmp[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, &packet->addr.v6, tmp, sizeof(tmp));
-        clientInfo.set(String("address"), String(tmp));
-        clientInfo.set(String("port"), Variant(packet->port));
-        data = Variant(String(packet->data, packet->length, CopyString));
+        inet_ntop(AF_INET6, &packet->info.addr.inet_v6.sin6_addr, address, sizeof(address));
+        clientInfo.set(String("address"), String(address));
+        clientInfo.set(String("port"), Variant(ntohs(packet->info.addr.inet_v6.sin6_port)));
     }
     //unix dgram
     else if (req->info.type == SW_EVENT_UNIX_DGRAM)
     {
-        clientInfo.set(String("address"), String(packet->data, packet->addr.un.path_length, CopyString));
-        clientInfo.set(String("port"), Variant(packet->port));
-        data = Variant(String(packet->data + packet->addr.un.path_length, packet->length - packet->addr.un.path_length, CopyString));
+        clientInfo.set(String("address"), String(packet->info.addr.un.sun_path, strlen(packet->info.addr.un.sun_path), CopyString));
+        clientInfo.set(String("port"), Variant(-1));
     }
+
+    data = Variant(String(packet->data, packet->length, CopyString));
 
     args.append(Variant(this_));
     args.append(data);
@@ -337,7 +299,7 @@ static int hhvm_swoole_onTask(swServer *serv, swEventData *req)
     auto this_ = (ObjectData *) serv->ptr2;
     auto args = Array();
     Variant data;
-    sw_atomic_fetch_sub(&SwooleStats->tasking_num, 1);
+    sw_atomic_fetch_sub(&serv->stats->tasking_num, 1);
 
     args.append(Variant(this_));
     args.append(Variant(req->info.fd));
@@ -345,24 +307,17 @@ static int hhvm_swoole_onTask(swServer *serv, swEventData *req)
 
     char *data_ptr;
     uint32_t data_length;
-    bool free_memory = false;
+    swString *result = nullptr;
 
     if (swTask_type(req) & SW_TASK_TMPFILE)
     {
-        int data_len;
-        char *buf = NULL;
-        swTaskWorker_large_unpack(req, malloc, buf, data_len);
-        if (data_len == -1)
+        result = swTaskWorker_large_unpack(req);
+        if (result == nullptr)
         {
-            if (buf)
-            {
-                free(buf);
-            }
             return SW_OK;
         }
-        data_ptr = buf;
-        data_length = data_len;
-        free_memory = true;
+        data_ptr = result->str;
+        data_length = result->length;
     }
     else
     {
@@ -378,10 +333,11 @@ static int hhvm_swoole_onTask(swServer *serv, swEventData *req)
     {
         data = String(data_ptr, data_length, CopyString);
     }
-    if (free_memory)
+    if (result)
     {
-        free(data_ptr);
+        swString_free(result);
     }
+
     args.append(data);
     const Variant callback = this_->o_get("onTask");
     auto retval = vm_call_user_func(callback, args);
@@ -431,8 +387,8 @@ static void hhvm_swoole_onWorkerStart(swServer *serv, int worker_id)
     args.append(Variant(worker_id));
     const Variant callback = this_->o_get("onWorkerStart", false);
 
-    this_->o_set("master_pid", Variant(SwooleGS->master_pid));
-    this_->o_set("manager_pid", Variant(SwooleGS->manager_pid));
+    this_->o_set("master_pid", Variant(serv->gs->master_pid));
+    this_->o_set("manager_pid", Variant(serv->gs->manager_pid));
     this_->o_set("worker_id", Variant(worker_id));
 
     if (!callback.isNull())
@@ -451,26 +407,20 @@ static void hhvm_swoole_onWorkerStop(swServer *serv, int worker_id)
     vm_call_user_func(callback, args);
 }
 
-    static void HHVM_FUNCTION(swoole_set_process_name, const String &name)
-    {
-        return;
-    }
+static void HHVM_FUNCTION(swoole_set_process_name, const String &name)
+{
+    return;
+}
 
 static bool HHVM_METHOD(swoole_server, __construct, const String &host, int port, int mode = SW_MODE_PROCESS,
                         int type = SW_SOCK_TCP)
 {
-    if (SwooleGS->start > 0)
-    {
-        raise_warning("server is already running. Unable to create swoole_server.");
-        return false;
-    }
-
     swoole_server_object = (swServer *) malloc(sizeof(swServer));
     swServer *serv = swoole_server_object;
     swServer_init(serv);
     serv->factory_mode = (uint8_t) mode;
 
-    if (serv->factory_mode == SW_MODE_SINGLE)
+    if (serv->factory_mode == SW_MODE_BASE)
     {
         serv->worker_num = 1;
         serv->max_request = 0;
@@ -493,7 +443,7 @@ static bool HHVM_METHOD(swoole_server, on, const String &event, const Variant &c
         return false;
     }
 
-    if (SwooleGS->start > 0)
+    if (swoole_server_object->gs->start > 0)
     {
         raise_warning("Server is running. Unable to set event callback now.");
         return false;
@@ -537,7 +487,7 @@ static bool HHVM_METHOD(swoole_server, on, const String &event, const Variant &c
 
 static bool HHVM_METHOD(swoole_server, set, const Array& setting)
 {
-    if (SwooleGS->start > 0)
+    if (swoole_server_object->gs->start > 0)
     {
         raise_warning("Server is running. Unable to set event callback now.");
         return false;
@@ -621,13 +571,13 @@ static bool HHVM_METHOD(swoole_server, set, const Array& setting)
     //task_worker_num
     if (setting.exists(String("task_worker_num")))
     {
-        SwooleG.task_worker_num = setting[String("task_worker_num")].toInt16();
+        serv->task_worker_num = setting[String("task_worker_num")].toInt16();
         this_->o_set("task_callbacks", Array::Create());
     }
     //task ipc mode, 1,2,3
     if (setting.exists(String("task_ipc_mode")))
     {
-        SwooleG.task_ipc_mode = setting[String("task_ipc_mode")].toInt16();
+        serv->task_ipc_mode = setting[String("task_ipc_mode")].toInt16();
     }
     /**
      * Temporary file directory for task_worker
@@ -649,7 +599,7 @@ static bool HHVM_METHOD(swoole_server, set, const Array& setting)
     //task_max_request
     if (setting.exists(String("task_max_request")))
     {
-        SwooleG.task_max_request = setting[String("task_max_request")].toInt32();
+        serv->task_max_request = setting[String("task_max_request")].toInt32();
     }
     //max_connection
     if (setting.exists(String("max_connection")))
@@ -708,13 +658,6 @@ static bool HHVM_METHOD(swoole_server, set, const Array& setting)
     {
         serv->buffer_output_size = setting[String("buffer_output_size")].toInt32();
     }
-    /**
-     * set pipe memory buffer size
-     */
-    if (setting.exists(String("pipe_buffer_size")))
-    {
-        serv->pipe_buffer_size = setting[String("pipe_buffer_size")].toInt32();
-    }
     //message queue key
     if (setting.exists(String("message_queue_key")))
     {
@@ -726,7 +669,7 @@ static bool HHVM_METHOD(swoole_server, set, const Array& setting)
 
 static bool HHVM_METHOD(swoole_server, start)
 {
-    if (SwooleGS->start > 0)
+    if (swoole_server_object->gs->start > 0)
     {
         raise_warning("Server is running. Unable to execute swoole_server::start.");
         return false;
@@ -776,7 +719,7 @@ static bool HHVM_METHOD(swoole_server, start)
 
 static bool HHVM_METHOD(swoole_server, send, int fd, const String &data)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
         return false;
@@ -786,12 +729,12 @@ static bool HHVM_METHOD(swoole_server, send, int fd, const String &data)
         raise_warning("data is empty.");
         return false;
     }
-    return swServer_tcp_send(swoole_server_object, fd, (char *)data.c_str(), data.length()) == SW_OK ? true : false;
+    return swoole_server_object->send(swoole_server_object, fd, (char *)data.c_str(), data.length()) == SW_OK ? true : false;
 }
 
 static bool HHVM_METHOD(swoole_server, sendto, const String &ip, int port, const String &data, int server_socket = -1)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
         return false;
@@ -838,7 +781,7 @@ static bool HHVM_METHOD(swoole_server, sendto, const String &ip, int port, const
 
 static bool HHVM_METHOD(swoole_server, close, int fd, bool reset = false)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
         return false;
@@ -881,14 +824,14 @@ static bool HHVM_METHOD(swoole_server, close, int fd, bool reset = false)
 
 static int HHVM_METHOD(swoole_server, task, const Variant &data, int dst_worker_id, const Variant &callback)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
         return false;
     }
     swEventData buf;
 
-    if (check_task_param(dst_worker_id) < 0)
+    if (check_task_param(swoole_server_object, dst_worker_id) < 0)
     {
         return false;
     }
@@ -911,9 +854,9 @@ static int HHVM_METHOD(swoole_server, task, const Variant &data, int dst_worker_
     }
 
     swTask_type(&buf) |= SW_TASK_NONBLOCK;
-    if (swProcessPool_dispatch(&SwooleGS->task_workers, &buf, &dst_worker_id) >= 0)
+    if (swProcessPool_dispatch(&swoole_server_object->gs->task_workers, &buf, &dst_worker_id) >= 0)
     {
-        sw_atomic_fetch_add(&SwooleStats->tasking_num, 1);
+        sw_atomic_fetch_add(&swoole_server_object->stats->tasking_num, 1);
         return buf.info.fd;
     }
     else
@@ -924,7 +867,7 @@ static int HHVM_METHOD(swoole_server, task, const Variant &data, int dst_worker_
 
 static bool HHVM_METHOD(swoole_server, exist, int fd)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
         return false;
@@ -941,18 +884,11 @@ static bool HHVM_METHOD(swoole_server, exist, int fd)
     }
 }
 
-static bool HHVM_METHOD(swoole_server, sendfile, int fd, const String &file, long offset = 0)
+static bool HHVM_METHOD(swoole_server, sendfile, int fd, const String &file, long offset = 0, long length = 0)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
-        return false;
-    }
-
-    //check fd
-    if (fd <= 0 || fd > SW_MAX_SOCKET_ID)
-    {
-        swoole_error_log(SW_LOG_WARNING, SW_ERROR_SESSION_INVALID_ID, "invalid fd[%d].", fd);
         return false;
     }
 
@@ -976,13 +912,13 @@ static bool HHVM_METHOD(swoole_server, sendfile, int fd, const String &file, lon
             return false;
         }
 
-        return swServer_tcp_sendfile(swoole_server_object, fd, (char *)file.c_str(), file.length(), offset) == SW_OK ? true : false;
+        return swoole_server_object->sendfile(swoole_server_object, fd, (char *)file.c_str(), file.length(), offset, length) == SW_OK ? true : false;
     }
 }
 
 static Variant HHVM_METHOD(swoole_server, getClientInfo, int fd, int reactorId, bool noCheckConnection)
 {
-    if (SwooleGS->start == 0)
+    if (swoole_server_object->gs->start == 0)
     {
         raise_warning("Server is not running.");
         return Variant(false);
@@ -1004,7 +940,7 @@ static Variant HHVM_METHOD(swoole_server, getClientInfo, int fd, int reactorId, 
 
         if (swoole_server_object->dispatch_mode == SW_DISPATCH_UIDMOD)
         {
-            retval.set(String("uid"), Variant(conn->uid));
+            retval.set(String("uid"), Variant((long) conn->uid));
         }
 
         swListenPort *port = swServer_get_port(swoole_server_object, conn->fd);
@@ -1024,7 +960,7 @@ static Variant HHVM_METHOD(swoole_server, getClientInfo, int fd, int reactorId, 
         {
             retval.set(String("server_port"), Variant(swConnection_get_port(from_sock)));
         }
-        retval.set(String("server_fd"), Variant(conn->from_fd));
+        retval.set(String("server_fd"), Variant((long)conn->from_fd));
         retval.set(String("socket_type"), Variant(conn->socket_type));
         retval.set(String("remote_port"), Variant(swConnection_get_port(conn)));
         retval.set(String("remote_ip"), Variant(String(swConnection_get_ip(conn))));
@@ -1047,7 +983,7 @@ public:
     {
         swoole_init();
 
-        Native::registerConstant<KindOfInt64>(s_SWOOLE_BASE.get(), SW_MODE_SINGLE);
+        Native::registerConstant<KindOfInt64>(s_SWOOLE_BASE.get(), SW_MODE_BASE);
         Native::registerConstant<KindOfInt64>(s_SWOOLE_PROCESS.get(), SW_MODE_PROCESS);
         Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_TCP.get(), SW_SOCK_TCP);
         Native::registerConstant<KindOfInt64>(s_SWOOLE_SOCK_TCP6.get(), SW_SOCK_TCP6);

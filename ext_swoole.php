@@ -15,7 +15,7 @@ class Swoole_Server {
     <<__Native>>
     function close(int $fd, bool $reset = false): bool;
     <<__Native>>
-    function sendfile(int $fd, string $file, int $offset = 0): bool;
+    function sendfile(int $fd, string $file, int $offset = 0, int $length = 0): bool;
     <<__Native>>
     function exist(int $fd): bool;
     <<__Native>>
@@ -30,7 +30,7 @@ class Swoole_Server {
     {
         return swoole_timer_tick($ms, $callback);
     }
-    function connection_info($fd, $reactorId = 0, bool $noCheckConnection = false): array;
+    function connection_info($fd, $reactorId = 0, bool $noCheckConnection = false): array
     {
         return $this->getClientInfo($fd, $reactorId, $noCheckConnection);
     }

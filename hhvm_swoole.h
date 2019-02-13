@@ -13,8 +13,7 @@
   | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
   +----------------------------------------------------------------------+
 */
-#ifndef HPHP_HHVM_SWOOLE_H_H
-#define HPHP_HHVM_SWOOLE_H_H
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/builtin-functions.h"
@@ -22,9 +21,10 @@
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/array-init.h"
 
-#include "config.h"
+#include "swoole/config.h"
+#include "swoole/swoole_config.h"
 #include "swoole/include/swoole.h"
-#include "swoole/include/Server.h"
+#include "swoole/include/server.h"
 
 namespace HPHP
 {
@@ -37,5 +37,3 @@ namespace HPHP
     bool HHVM_FUNCTION(swoole_timer_clear, long id);
     bool HHVM_FUNCTION(swoole_timer_exists, long id);
 }
-
-#endif //HPHP_HHVM_SWOOLE_H_H
